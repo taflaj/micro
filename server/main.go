@@ -16,7 +16,7 @@ import (
 const (
 	name    = "server"
 	port    = "8888"
-	version = "0.1.0"
+	version = "0.1.1"
 )
 
 var registered bool
@@ -37,10 +37,22 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	if r.ContentLength > 0 {
 		contentType = r.Header["Content-Type"][0]
 	}
-	log.Printf("%v %v from %v using %v\n  Contents: \"%v\" (%v); Accept \"%v\"", r.Method, r.URL.Path, r.RemoteAddr, r.Header["User-Agent"][0], contentType, r.ContentLength, r.Header["Accept"][0])
+	agent := "-"
+	agents := r.Header["User-Agent"]
+	if agents != nil && len(agents) > 0 {
+		agent = agents[0]
+	}
+	accept := "-"
+	accepts := r.Header["Accept"]
+	if accepts != nil && len(accepts) > 0 {
+		accept = accepts[0]
+	}
+	log.Printf("%v %v from %v using %v\n  Contents: \"%v\" (%v); Accept \"%v\"", r.Method, r.URL.Path, r.RemoteAddr, agent, contentType, r.ContentLength, accept)
 	msg := &messaging.Message{From: name, Request: r.RequestURI}
 	msg.Command = strings.Split(r.RequestURI[1:], "/")
-	msg.Service = msg.Command[1]
+	if len(msg.Command) > 1 {
+		msg.Service = msg.Command[1]
+	}
 	msg.To = append(msg.To, msg.Service)
 	// msg.CC = append(msg.CC, "logger")
 	body, err := ioutil.ReadAll(r.Body)

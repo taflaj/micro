@@ -18,7 +18,7 @@ var directory dir
 const (
 	name    = "router"
 	port    = "8001"
-	version = "0.1.0"
+	version = "0.1.1"
 )
 
 func init() {
@@ -89,7 +89,7 @@ func generalHandler(w http.ResponseWriter, r *http.Request) {
 					fmt.Fprint(w, response.Payload)
 				}
 			} else {
-				fail(w, fmt.Errorf("Service %v is not active", service))
+				fail(w, fmt.Errorf("Service '%v' is not active", service))
 			}
 			// fmt.Fprintf(w, "%#v\n", msg)
 			// return
