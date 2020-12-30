@@ -20,6 +20,7 @@ type Message struct {
 	Service string
 	Request string
 	Command []string
+	IP      string
 	Data    interface{}
 }
 

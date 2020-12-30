@@ -14,9 +14,10 @@ import (
 )
 
 const (
+	blank   = "<blank>"
 	name    = "server"
 	port    = "8888"
-	version = "0.1.1"
+	version = "0.1.2"
 )
 
 var registered bool
@@ -25,7 +26,17 @@ func init() {
 	log.SetFlags(log.Flags() | log.Lmicroseconds)
 }
 
+func logIt(r *http.Request) {
+	agent := blank
+	agents := r.Header["User-Agent"]
+	if agents != nil && len(agents) > 0 {
+		agent = agents[0]
+	}
+	log.Printf("%v %v from %v using %v", r.Method, r.URL.Path, r.RemoteAddr, agent)
+}
+
 func handler(w http.ResponseWriter, r *http.Request) {
+	logIt(r)
 	if !registered {
 		if _, err := messaging.Get(messaging.Messenger, "register/"+name+"/"+port); err != nil {
 			log.Print(err)
@@ -37,18 +48,15 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	if r.ContentLength > 0 {
 		contentType = r.Header["Content-Type"][0]
 	}
-	agent := "-"
-	agents := r.Header["User-Agent"]
-	if agents != nil && len(agents) > 0 {
-		agent = agents[0]
-	}
-	accept := "-"
+	accept := blank
 	accepts := r.Header["Accept"]
 	if accepts != nil && len(accepts) > 0 {
 		accept = accepts[0]
 	}
-	log.Printf("%v %v from %v using %v\n  Contents: \"%v\" (%v); Accept \"%v\"", r.Method, r.URL.Path, r.RemoteAddr, agent, contentType, r.ContentLength, accept)
-	msg := &messaging.Message{From: name, Request: r.RequestURI}
+	log.Printf("  Contents: \"%v\" (%v); Accept \"%v\"", contentType, r.ContentLength, accept)
+	ip := r.RemoteAddr
+	p := strings.LastIndex(ip, ":")
+	msg := &messaging.Message{From: name, Request: r.RequestURI, IP: ip[:p]}
 	msg.Command = strings.Split(r.RequestURI[1:], "/")
 	if len(msg.Command) > 1 {
 		msg.Service = msg.Command[1]
@@ -93,8 +101,9 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	// 	// r.ParseMultipartForm(1024)
 	// 	// fmt.Fprintf(w, "Form: %#v\nPostForm: %#v\nMultipartForm: %#v\n", r.Form, r.PostForm, r.MultipartForm)
 	// }
+	log.Printf("  -> %#v", msg)
 	response, err := msg.Send(messaging.Messenger)
-	// log.Printf("%#v, %v\n", response, err)
+	log.Printf("  <- %#v, %v\n", response, err)
 	w.WriteHeader(response.Code)
 	w.Header().Set("Content-Type", response.ContentType)
 	fmt.Fprintf(w, "%v", response.Payload)
@@ -103,7 +112,8 @@ func handler(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	http.HandleFunc("/get/"+name+"/version", func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("%v %v from %v using %v", r.Method, r.URL.Path, r.RemoteAddr, r.Header["User-Agent"][0])
+		logIt(r)
+		// log.Printf("%v %v from %v using %v", r.Method, r.URL.Path, r.RemoteAddr, r.Header["User-Agent"][0])
 		fmt.Fprint(w, version)
 	})
 	http.HandleFunc("/", handler)
