@@ -126,6 +126,7 @@ type Message struct {
         Service string
         Request string
         Command []string
+        IP      string
         Data    interface{}
 }
 ```
@@ -139,6 +140,7 @@ Each message is passed as a json object using http PUT.
 * `Service` contains the name of the service being invoked. It follows `get`, `set`, etc. on the request.
 * `Request` contains the entire request.
 * `Command` contains each component of the request (whatever is separated by `/`) in an array.
+* `IP` contains the IP address of the requestor. Could be used for whitelisting and blacklisting.
 * `Data` contains whatever form data (specified using `-d` or `-F`) is included.
 
 The response is always a plain and simple http response.
