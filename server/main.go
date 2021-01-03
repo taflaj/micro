@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/taflaj/micro/messaging"
@@ -17,13 +18,21 @@ const (
 	blank   = "<blank>"
 	name    = "server"
 	port    = "8888"
-	version = "0.1.2"
+	version = "0.1.3"
 )
 
-var registered bool
+var (
+	registered bool
+	token      string
+)
 
 func init() {
 	log.SetFlags(log.Flags() | log.Lmicroseconds)
+}
+
+func getIP(ip string) string {
+	p := strings.LastIndex(ip, ":")
+	return ip[:p]
 }
 
 func logIt(r *http.Request) {
@@ -33,6 +42,38 @@ func logIt(r *http.Request) {
 		agent = agents[0]
 	}
 	log.Printf("%v %v from %v using %v", r.Method, r.URL.Path, r.RemoteAddr, agent)
+	go func(r *http.Request) {
+		url := "http://ipinfo.io/" + getIP(r.RemoteAddr)
+		if token != "" {
+			url += "?token=" + token
+		}
+		var err error
+		response, err := http.Get(url)
+		if err == nil {
+			defer response.Body.Close()
+			data, err := ioutil.ReadAll(response.Body)
+			if err == nil {
+				var ipinfo struct {
+					IP      string
+					City    string
+					Region  string
+					Country string
+					Postal  string
+					BogOn   bool
+				}
+				if err = json.Unmarshal(data, &ipinfo); err == nil {
+					if ipinfo.BogOn {
+						log.Printf("  %v", ipinfo.IP)
+					} else {
+						log.Printf("  %v %v/%v/%v/%v", ipinfo.IP, ipinfo.City, ipinfo.Region, ipinfo.Postal, ipinfo.Country)
+					}
+					// log.Printf("  %#v", ipinfo)
+					return
+				}
+			}
+		}
+		log.Print(err)
+	}(r)
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
@@ -54,9 +95,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		accept = accepts[0]
 	}
 	log.Printf("  Contents: \"%v\" (%v); Accept \"%v\"", contentType, r.ContentLength, accept)
-	ip := r.RemoteAddr
-	p := strings.LastIndex(ip, ":")
-	msg := &messaging.Message{From: name, Request: r.RequestURI, IP: ip[:p]}
+	msg := &messaging.Message{From: name, Request: r.RequestURI, IP: getIP(r.RemoteAddr)}
 	msg.Command = strings.Split(r.RequestURI[1:], "/")
 	if len(msg.Command) > 1 {
 		msg.Service = msg.Command[1]
@@ -111,6 +150,9 @@ func handler(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	if len(os.Args) > 1 {
+		token = os.Args[1]
+	}
 	http.HandleFunc("/get/"+name+"/version", func(w http.ResponseWriter, r *http.Request) {
 		logIt(r)
 		// log.Printf("%v %v from %v using %v", r.Method, r.URL.Path, r.RemoteAddr, r.Header["User-Agent"][0])
