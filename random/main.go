@@ -3,33 +3,31 @@
 package main
 
 import (
-	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"strconv"
 
-	"github.com/taflaj/micro/messaging"
+	"github.com/taflaj/micro/modules/logger"
+	"github.com/taflaj/micro/modules/messaging"
 	"github.com/taflaj/util/random"
 )
 
 const (
 	name    = "random"
-	port    = "8002"
-	version = "0.1.0"
+	port    = "9997"
+	version = "0.1.1 dev"
 )
 
+var log logger.Logger
+
 func init() {
-	log.SetFlags(log.Flags() | log.Lmicroseconds)
+	logger.NewLogger(name)
 }
 
 func logIt(r *http.Request) {
-	log.Printf("%v %v from %v using %v", r.Method, r.URL.Path, r.RemoteAddr, r.Header["User-Agent"][0])
-}
-
-func fail(w http.ResponseWriter, code int, err error) {
-	w.WriteHeader(code)
-	fmt.Fprint(w, err)
+	who := r.Header["User-Agent"][0]
+	logger.GetLogger().Printf("%v %v from %v using %v", r.Method, r.URL.Path, r.RemoteAddr, who)
+	// logger.GetLogger().Spy(who)
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
@@ -37,16 +35,16 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	msg, err := messaging.GetMessage(r)
 	if err != nil {
-		fail(w, http.StatusInternalServerError, err)
+		messaging.Fail(w, http.StatusInternalServerError, err)
 	} else if len(msg.Command) < 3 {
-		fail(w, http.StatusBadRequest, errors.New("Bad request format"))
+		messaging.FailBadRequestStandard(w)
 	} else {
-		// log.Printf("%#v", msg)
+		// logger.GetLogger().Printf("%#v", msg)
 		length := 32
 		if len(msg.Command) > 3 {
-			l, err := strconv.Atoi(msg.Command[3])
+			l, err := strconv.ParseInt(msg.Command[3], 10, 64)
 			if err == nil {
-				length = l
+				length = int(l)
 			}
 		}
 		var result string
@@ -72,7 +70,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			fmt.Fprint(w, result)
 		} else {
-			fail(w, http.StatusInternalServerError, err)
+			messaging.Fail(w, http.StatusInternalServerError, err)
 		}
 	}
 }
@@ -81,8 +79,9 @@ func main() {
 	http.HandleFunc("/", handler)
 	go func() {
 		if _, err := messaging.Get(messaging.Messenger, "register/"+name+"/"+port+"/localhost"); err != nil {
-			log.Fatal(err)
+			logger.GetLogger().Fatal(err)
 		}
 	}()
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+	logger.GetLogger().Printf("Listening on port %v", port)
+	logger.GetLogger().Fatal(http.ListenAndServe(":"+port, nil))
 }
