@@ -13,6 +13,8 @@ Add one or more lines: `curl -X PUT add/digest/lines -d '<text>' [-d '<text>' [.
 
 Get a public key given its email address: `curl -X GET get/pubkey/<email>`
 
+Public keys, due to security concerns, can only be updated manually.
+
 ## Random Numbers and Strings ##
 
 `curl -X GET get/random/<type>[/<length>]`
@@ -23,6 +25,14 @@ Default length is 32 characters.
 ## Version ##
 
 `curl -X GET get/<service>/version`
+
+## Access Control ##
+
+Set specific access: `curl -X PUT set/access/<service> -d "access=<access>" -d "ip=<id address>" [-d "owner=<owner>] [-d "remarks=<remarks>]`
+
+Set default access: `curl -X DELETE set/access/<service> -d "ip=<id address>"`
+
+Access can be `no` for no access, `ro` for read only, `wo` for write only, and `rw` for read & write. Requestor must have write access to the access service.
 
 ## Not Yet Implemented ##
 
@@ -104,7 +114,7 @@ The entry point to all the services is by default listening on port 8888. All it
 
 ## Router ##
 
-The router is listening on port 8001 by default. It receives a message through http PUT, passes it as http PUT requests to the necessary services, collects the response, and returns it as a simple http response to the caller.
+The router is listening on port 8001 by default. It receives a message through http POST, passes it as http POST requests to the necessary services, collects the response, and returns it as a simple http response to the caller.
 
 Before a service can be called, it must register itself with the router, and then unregister before it becomes inactive.
 
@@ -124,23 +134,64 @@ type Message struct {
         CC      []string
         From    string
         Service string
+        Method  string
         Request string
         Command []string
-        IP      string
+        IP      int
         Data    interface{}
 }
 ```
 
-Each message is passed as a json object using http PUT.
+Each message is passed as a json object using http POST.
 
 * `To` contains the names of all primary services that must receive this message. Each recipient is expected to respond.
-    * In the current implementation, there should only be one service on the `To` line.
+    * In the current implementation, the router ignores this field. Instead, it uses `Service` to route the message.
 * `CC` contains the names of all secondary services that need to be informed. No response is expected.
 * `From` contains the name of the sender of the message.
 * `Service` contains the name of the service being invoked. It follows `get`, `set`, etc. on the request.
-* `Request` contains the entire request.
+* `Method` contains the http request method.
+* `Request` contains the entire http request.
 * `Command` contains each component of the request (whatever is separated by `/`) in an array.
-* `IP` contains the IP address of the requestor. Could be used for whitelisting and blacklisting.
+* `IP` contains the IP address of the requestor. Could be used for whitelisting and blacklisting. If set to -1, it means the request was originated by another service.
 * `Data` contains whatever form data (specified using `-d` or `-F`) is included.
 
-The response is always a plain and simple http response.
+The response is usually a plain and simple http response.
+
+### Exceptions ###
+
+A given service may need to query the access level the requestor has. In this case, it must pass a `Message` to the router, setting all fields accordingly, with attention to the following:
+
+* `To` must include "service."
+* `Service` must be set to "service."
+* `IP` must be set to -1.
+* `Data` must contain an `AccessLevelQuery` object.
+
+```go
+type AccessLevelQuery struct {
+        Address int
+        Service string
+}
+```
+
+* `Address` contains the IP address of the consumer.
+* `Service` contains the name of the service.
+
+The response comes in this form:
+
+```go
+type AccessLevel struct {
+	Address  int
+	Service  string
+	Defined  bool
+	Level    string
+	CanRead  bool
+	CanWrite bool
+}
+```
+
+* `Address` contains the IP address of the consumer.
+* `Service` contains the name of the service.
+* `Defined` specifies whether specific access is defined or custom (`true`) or default (`false`). If custom:
+    * `Level` contains the access level: `no`, `wo`, `ro`, or `rw`.
+    * `CanRead`, if `true`, indicates the requestor can read from the service.
+    * `CanWrite`, if `true`, indicates the requestor can write to the service.

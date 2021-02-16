@@ -7,6 +7,8 @@ import (
 
 	// to isolate database details from the remainder of the application
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/taflaj/micro/modules/database"
+	// "github.com/taflaj/micro/database"
 )
 
 // DataStore implements model methods
@@ -18,15 +20,6 @@ type DataStore interface {
 // DB is used to encapsulate sql.DB
 type DB struct {
 	*sql.DB
-}
-
-func execute(db *sql.DB, cmd string, params ...interface{}) (sql.Result, error) {
-	stmt, err := db.Prepare(cmd)
-	if err != nil {
-		return nil, err
-	}
-	defer stmt.Close()
-	return stmt.Exec(params...)
 }
 
 func initialize(db *sql.DB) error {
@@ -43,7 +36,7 @@ func initialize(db *sql.DB) error {
 		"CREATE UNIQUE INDEX IF NOT EXISTS PubKeys_ID_IDX ON PubKeys(ID, Email)",
 	}
 	for i := 0; i < len(commands); i++ {
-		if _, err = execute(db, commands[i]); err != nil {
+		if _, err = database.Execute(db, commands[i]); err != nil {
 			return err
 		}
 	}
