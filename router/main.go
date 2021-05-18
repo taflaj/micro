@@ -5,47 +5,59 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 
-	"github.com/taflaj/micro/modules/logger"
-	"github.com/taflaj/micro/modules/messaging"
+	"github.com/taflaj/services/modules/logger"
+	"github.com/taflaj/services/modules/messaging"
+	"github.com/taflaj/util/server"
 )
-
-type dir map[string]*messaging.Host
-
-var directory dir
 
 const (
 	name    = "router"
 	port    = "9998"
-	version = "0.1.2 dev"
+	version = "0.1.3"
 )
 
+type dir map[string]*messaging.Host
+
 var (
-	exists   = struct{}{}
-	services = map[string]struct{}{
+	directory dir
+	exists    = struct{}{}
+	services  = map[string]struct{}{
 		"access": exists,
+		"digest": exists,
 		"pubkey": exists,
 		"random": exists,
 		"router": exists,
 		"server": exists,
 	}
-	log logger.Logger
 )
 
 func init() {
+	logger.NewLogger(name, logger.Info)
+	// logger.NewLogger(name, logger.Debug)
 	directory = make(dir)
-	logger.NewLogger(name)
+}
+
+func (d dir) dump() {
+	if logger.GetLogger().GetLevel() <= logger.Debug {
+		output := "dir: "
+		for k, v := range d {
+			output += fmt.Sprintf("{%v@%v:%v}", k, v.Address, v.Port)
+		}
+		logger.GetLogger().Logd(logger.Debug, 1, output)
+	}
 }
 
 func logIt(r *http.Request) {
 	who := r.Header["User-Agent"][0]
-	logger.GetLogger().Printf("%v %v from %v using %v", r.Method, r.URL.Path, r.RemoteAddr, who)
-	logger.GetLogger().Spy(who)
+	logger.GetLogger().Logdf(logger.Debug, 1, "%#v", r)
+	logger.GetLogger().Logdf(logger.Info, 1, "%v %v from %v using %v", r.Method, r.URL.Path, r.RemoteAddr, who)
 }
 
 func registerHandler(w http.ResponseWriter, r *http.Request) {
-	// incoming request format: register/<service>/<port>[/<address>]
+	// incoming request format: /register/<service>/<port>[/<address>]
 	logIt(r)
 	splits := strings.Split(r.URL.Path, "/")
 	if len(splits) > 3 {
@@ -53,7 +65,8 @@ func registerHandler(w http.ResponseWriter, r *http.Request) {
 		if _, exists := directory[service]; exists {
 			w.WriteHeader(http.StatusAlreadyReported)
 		} else if _, ok := services[service]; !ok {
-			messaging.Fail(w, http.StatusUnauthorized, fmt.Errorf("Service '%v' is not authorized", service))
+			logger.GetLogger().Log(logger.Error, fmt.Errorf("service '%s' is not authorized", service))
+			w.WriteHeader(http.StatusUnauthorized)
 		} else {
 			w.WriteHeader(http.StatusOK)
 			address := strings.Split(r.RemoteAddr, ":")[0]
@@ -63,37 +76,35 @@ func registerHandler(w http.ResponseWriter, r *http.Request) {
 			port := splits[3]
 			directory[service] = &messaging.Host{Address: address, Port: port}
 		}
-		// w.WriteHeader(http.StatusOK)
 	} else {
 		w.WriteHeader(http.StatusBadRequest)
 	}
-	fmt.Fprintf(w, "%#v\n", directory)
+	directory.dump()
+	messaging.Ok(w)
 }
 
 func unregisterHandler(w http.ResponseWriter, r *http.Request) {
-	// incoming request format: unregister/<service>
+	// incoming request format: /unregister/<service>
 	logIt(r)
 	service := strings.Split(r.URL.Path, "/")[2]
 	delete(directory, service)
-	fmt.Fprintf(w, "%#v\n", directory)
+	directory.dump()
+	messaging.Ok(w)
 }
 
 func generalHandler(w http.ResponseWriter, r *http.Request) {
 	logIt(r)
 	var err error
-	msg, err := messaging.GetMessage(r)
-	// logger.GetLogger().Printf("%#v\n  %v", msg, err)
+	message, err := messaging.GetMessage(r)
 	if err == nil {
-		service := msg.Service
-		if service == name && msg.Command[0] == "get" && msg.Command[2] == "version" {
+		service := message.Service
+		if service == name && message.Command[0] == "get" && message.Command[2] == "version" {
 			fmt.Fprint(w, version)
 		} else {
 			host, present := directory[service]
 			if present {
-				// fmt.Fprintf(w, "Forwarding message to %#v\n", host)
-				response, err := msg.Send(host)
+				response, err := message.Send(host)
 				if err != nil {
-					// messaging.Fail(w, http.StatusInternalServerError, err)
 					messaging.FailInternal(w, err)
 				} else {
 					w.WriteHeader(response.Code)
@@ -101,23 +112,26 @@ func generalHandler(w http.ResponseWriter, r *http.Request) {
 					fmt.Fprint(w, response.Payload)
 				}
 			} else if _, ok := services[service]; ok {
-				// messaging.Fail(w, http.StatusInternalServerError, fmt.Errorf("Service '%v' is not active", service))
-				messaging.FailInternal(w, fmt.Errorf("Service '%v' is not active", service))
+				messaging.FailInternal(w, fmt.Errorf("service '%v' is not active", service))
 			} else {
-				messaging.FailNotAuthorizedStandard(w)
+				messaging.FailNotAuthorized(w)
 			}
-			// fmt.Fprintf(w, "%#v\n", msg)
-			// return
 		}
 	} else {
-		messaging.Fail(w, http.StatusInternalServerError, err)
+		messaging.FailInternal(w, err)
 	}
 }
 
 func main() {
-	http.HandleFunc("/register/", registerHandler)
-	http.HandleFunc("/unregister/", unregisterHandler)
-	http.HandleFunc("/", generalHandler)
-	logger.GetLogger().Printf("Listening on port %v", port)
-	logger.GetLogger().Fatal(http.ListenAndServe(":"+port, nil))
+	var handlers = server.Handlers{
+		{Pattern: "/register/", Handler: registerHandler},
+		{Pattern: "/unregister/", Handler: unregisterHandler},
+		{Pattern: "/", Handler: generalHandler},
+	}
+	me := server.NewServer(":"+port, &handlers)
+	me.SetOnStart(func() { logger.GetLogger().Logf(logger.Info, "Listening on port %v", port) })
+	me.SetOnFail(func(err error) { logger.GetLogger().Log(logger.Error, err) })
+	me.SetOnInterrupt(func(signal os.Signal) { logger.GetLogger().Logf(logger.Warning, "Received %v", signal) })
+	me.Start()
+	logger.GetLogger().Log(logger.Info, "Exiting now")
 }

@@ -1,54 +1,52 @@
-// random: main.go
+// ramdom: main.go
 
 package main
 
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 
-	"github.com/taflaj/micro/modules/logger"
-	"github.com/taflaj/micro/modules/messaging"
+	"github.com/taflaj/services/modules/logger"
+	"github.com/taflaj/services/modules/messaging"
 	"github.com/taflaj/util/random"
+	"github.com/taflaj/util/server"
 )
 
 const (
 	name    = "random"
 	port    = "9997"
-	version = "0.1.1 dev"
+	version = "0.1.1"
 )
 
-var log logger.Logger
-
 func init() {
-	logger.NewLogger(name)
+	logger.NewLogger(name, logger.Info)
 }
 
 func logIt(r *http.Request) {
 	who := r.Header["User-Agent"][0]
-	logger.GetLogger().Printf("%v %v from %v using %v", r.Method, r.URL.Path, r.RemoteAddr, who)
-	// logger.GetLogger().Spy(who)
+	logger.GetLogger().Logdf(logger.Debug, 1, "%#v", r)
+	logger.GetLogger().Logdf(logger.Info, 1, "%v %v from %v using %v", r.Method, r.URL.Path, r.RemoteAddr, who)
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
 	logIt(r)
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	msg, err := messaging.GetMessage(r)
+	message, err := messaging.GetMessage(r)
 	if err != nil {
-		messaging.Fail(w, http.StatusInternalServerError, err)
-	} else if len(msg.Command) < 3 {
-		messaging.FailBadRequestStandard(w)
+		messaging.FailInternal(w, err)
+	} else if len(message.Command) < 3 {
+		messaging.FailBadRequest(w)
 	} else {
-		// logger.GetLogger().Printf("%#v", msg)
 		length := 32
-		if len(msg.Command) > 3 {
-			l, err := strconv.ParseInt(msg.Command[3], 10, 64)
+		if len(message.Command) > 3 {
+			l, err := strconv.ParseInt(message.Command[3], 10, 0)
 			if err == nil {
 				length = int(l)
 			}
 		}
 		var result string
-		t := msg.Command[2]
+		t := message.Command[2]
 		switch t {
 		case "alpha":
 			result, err = random.Alpha(length)
@@ -65,23 +63,24 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		case "version":
 			result = version
 		default:
-			err = fmt.Errorf("Unknown argument \"%v\"", t)
+			messaging.FailBadRequest(w, fmt.Errorf("unknown argument \"%v\"", t))
+			return
 		}
 		if err == nil {
 			fmt.Fprint(w, result)
 		} else {
-			messaging.Fail(w, http.StatusInternalServerError, err)
+			messaging.FailInternal(w, err)
 		}
 	}
 }
 
 func main() {
-	http.HandleFunc("/", handler)
-	go func() {
-		if _, err := messaging.Get(messaging.Messenger, "register/"+name+"/"+port+"/localhost"); err != nil {
-			logger.GetLogger().Fatal(err)
-		}
-	}()
-	logger.GetLogger().Printf("Listening on port %v", port)
-	logger.GetLogger().Fatal(http.ListenAndServe(":"+port, nil))
+	messaging.Get(messaging.Messenger, "register/"+name+"/"+port+"/localhost")
+	var handler = server.Handlers{{Pattern: "/", Handler: handler}}
+	me := server.NewServer(":"+port, &handler)
+	me.SetOnStart(func() { logger.GetLogger().Logf(logger.Info, "Listening on port %v", port) })
+	me.SetOnFail(func(err error) { logger.GetLogger().Log(logger.Error, err) })
+	me.SetOnInterrupt(func(signal os.Signal) { logger.GetLogger().Logf(logger.Warning, "Received %v", signal) })
+	me.Start()
+	logger.GetLogger().Log(logger.Info, "Exiting now")
 }

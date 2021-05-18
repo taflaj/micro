@@ -1,10 +1,11 @@
 #! /bin/sh
 
 # Stop microservices
-killall server
+killall -USR1 server
 sleep 1
-killall random
-killall pubkey
-killall access
+killall -USR1 random
+killall -USR1 pubkey
+# killall -USR1 digest
+killall -USR1 access
 sleep 1
-killall router
+killall -USR1 router

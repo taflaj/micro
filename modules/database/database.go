@@ -2,9 +2,7 @@
 
 package database
 
-import (
-	"database/sql"
-)
+import "database/sql"
 
 // Execute executes a SQL statement
 func Execute(db *sql.DB, cmd string, params ...interface{}) (sql.Result, error) {

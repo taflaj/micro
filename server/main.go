@@ -10,184 +10,124 @@ import (
 	"os"
 	"strings"
 
-	"github.com/taflaj/micro/modules/logger"
-	"github.com/taflaj/micro/modules/messaging"
+	"github.com/taflaj/services/modules/logger"
+	"github.com/taflaj/services/modules/messaging"
+	"github.com/taflaj/util/ipinfo"
+	"github.com/taflaj/util/server"
 )
 
 const (
 	blank   = "<blank>"
 	name    = "server"
 	port    = "9999"
-	version = "0.1.4 dev"
-)
-
-var (
-	registered bool
-	// token      string
-	headers messaging.Map
-	// log     logger.Logger
+	version = "0.1.4"
 )
 
 func init() {
-	headers = messaging.Map{"Accept": "application/json"}
-	logger.NewLogger(name)
+	logger.NewLogger(name, logger.Info)
+	// logger.NewLogger(name, logger.Debug)
 }
 
-func getIP(ip string) (string, int) {
-	p := strings.LastIndex(ip, ":")
-	asString := ip[:p]
-	asInt, _ := messaging.IPtoInt(ip[:p])
+func getAddress(origin string) (string, int) {
+	p := strings.LastIndex(origin, ":")
+	asString := origin[:p]
+	asInt, _ := messaging.IPtoInt(asString)
 	return asString, asInt
 }
 
 func logIt(r *http.Request) {
 	agent := blank
 	agents := r.Header["User-Agent"]
-	if agents != nil && len(agents) > 0 {
+	if len(agents) > 0 {
 		agent = agents[0]
 	}
-	// logger.GetLogger().Printf("%#v", r)
-	logger.GetLogger().Printf("%v %v from %v using %v", r.Method, r.URL.Path, r.RemoteAddr, agent)
-	// logger.GetLogger().Spy(agent)
-	go func(r *http.Request) {
-		// var headers *messaging.Header
-		// headers := messaging.Header{}
-		ip, _ := getIP(r.RemoteAddr)
-		url := "http://ipinfo.io/" + ip
-		// if token != "" {
-		// 	// url += "?token=" + token
-		// 	// headers = &messaging.Header{"Authorization": "Bearer " + token}
-		// 	headers["Authorization"] = "Bearer " + token
-		// }
-		var err error
-		response, err := messaging.Request(http.MethodGet, url, "", nil, &headers)
-		// logger.GetLogger().Printf("%#v", response)
+	logger.GetLogger().Logdf(logger.Debug, 1, "%#v", r)
+	logger.GetLogger().Logdf(logger.Info, 1, "%v %v from %v using %v", r.Method, r.URL.Path, r.RemoteAddr, agent)
+	go func() {
+		origin, _ := getAddress(r.RemoteAddr)
+		info, err := ipinfo.GetInfo(origin)
+		var output string
 		if err == nil {
-			defer response.Body.Close()
-			data, err := ioutil.ReadAll(response.Body)
-			if err == nil {
-				// logger.GetLogger().Printf("%v", string(data))
-				var ipinfo struct {
-					IP       string
-					City     string
-					Region   string
-					Country  string
-					Postal   string
-					HostName string
-					Org      string
-					Bogon    bool
-				}
-				if err = json.Unmarshal(data, &ipinfo); err == nil {
-					// logger.GetLogger().Printf("%&v", ipinfo)
-					report := fmt.Sprintf("  From: %v", ipinfo.IP)
-					if !ipinfo.Bogon {
-						report = fmt.Sprintf("%v %v/%v/%v/%v|%v|%v", report, ipinfo.City, ipinfo.Region, ipinfo.Postal, ipinfo.Country, ipinfo.HostName, ipinfo.Org)
-					}
-					logger.GetLogger().Print(report)
-					// if ipinfo.Bogon {
-					// 	logger.GetLogger().Printf("  From: %v", ipinfo.IP)
-					// } else {
-					// 	logger.GetLogger().Printf("  From: %v %v/%v/%v/%v|%v|%v")
-					// }
-					// logger.GetLogger().Printf("  %#v", ipinfo)
-					return
-				}
+			if info.Bogon {
+				output = info.IP
+			} else {
+				output = fmt.Sprintf("%s %s/%s/%s/%s|%s|%s", info.IP, info.City, info.Region, info.Postal, info.Country, info.HostName, info.Org)
 			}
+		} else {
+			output = origin
 		}
-		logger.GetLogger().Print(err)
-	}(r)
+		logger.GetLogger().Log(logger.Info, "  From: "+output)
+	}()
 }
 
-func handler(w http.ResponseWriter, r *http.Request) {
+func versionHandler(w http.ResponseWriter, r *http.Request) {
 	logIt(r)
-	if !registered {
-		if _, err := messaging.Get(messaging.Messenger, "register/"+name+"/"+port+"/localhost"); err != nil {
-			logger.GetLogger().Print(err)
-		} else {
-			registered = true
-		}
+	fmt.Fprint(w, version)
+}
+
+func getFirst(v []string) string {
+	var result string
+	if len(v) > 0 {
+		result = v[0]
 	}
-	contentType := ""
-	if r.ContentLength > 0 {
-		contentType = r.Header["Content-Type"][0]
+	return result
+}
+
+func generalHandler(w http.ResponseWriter, r *http.Request) {
+	logIt(r)
+	contentType := getFirst(r.Header["Content-Type"])
+	accept := getFirst(r.Header["Accept"])
+	logger.GetLogger().Logf(logger.Info, "  Contents: \"%v\" (%v); Accept \"%v\"", contentType, r.ContentLength, accept)
+	_, ip := getAddress(r.RemoteAddr)
+	message := messaging.Message{From: name, Method: r.Method, Request: r.RequestURI, IP: ip}
+	message.Command = strings.Split(r.RequestURI[1:], "/")
+	if len(message.Command) > 1 {
+		message.Service = message.Command[1]
 	}
-	accept := blank
-	accepts := r.Header["Accept"]
-	if accepts != nil && len(accepts) > 0 {
-		accept = accepts[0]
-	}
-	logger.GetLogger().Printf("  Contents: \"%v\" (%v); Accept \"%v\"", contentType, r.ContentLength, accept)
-	_, ip := getIP((r.RemoteAddr))
-	msg := &messaging.Message{From: name, Method: r.Method, Request: r.RequestURI, IP: ip}
-	msg.Command = strings.Split(r.RequestURI[1:], "/")
-	if len(msg.Command) > 1 {
-		msg.Service = msg.Command[1]
-	}
-	msg.To = append(msg.To, msg.Service)
-	// msg.CC = append(msg.CC, "logger")
+	defer r.Body.Close()
 	body, err := ioutil.ReadAll(r.Body)
 	if err != nil {
-		logger.GetLogger().Print(err)
+		logger.GetLogger().Log(logger.Warning, err)
 	}
 	switch contentType {
 	case "application/json":
-		if err = json.Unmarshal(body, &msg.Data); err != nil {
-			logger.GetLogger().Print(err)
+		if err = json.Unmarshal(body, &message.Data); err != nil {
+			logger.GetLogger().Log(logger.Warning, err)
 		}
 	case "application/x-www-form-urlencoded":
-		msg.Data = strings.Split(string(body), "&")
+		message.Data = strings.Split(string(body), "&")
 	default:
-		msg.Data = body
-		// splits := strings.Split(contentType, ";")
-		// if len(splits) > 0 {
-		// 	if splits[0] == "multipart/form-data" {
-		// 		boundary := splits[1][10:]
-		// 		msg.Data = strings.Split(string(body), boundary)
-		// 		logger.GetLogger().Printf("%v", msg.Data)
-		// 	}
-		// }
+		message.Data = append(message.Data, string(body))
 	}
-	// switch r.Method {
-	// case http.MethodDelete, http.MethodGet:
-	// 	fmt.Fprintf(w, "Ok\n")
-	// case http.MethodPost, http.MethodPut:
-	// 	body, err := ioutil.ReadAll(r.Body)
-	// 	if err != nil {
-	// 		logger.GetLogger().Printf("%#v", err)
-	// 		w.WriteHeader(http.StatusBadRequest)
-	// 	} else {
-	// 		// if ct == "application/json" {}
-	// 		w.WriteHeader(http.StatusOK)
-	// 		fmt.Fprintf(w, "%v\n", string(body))
-	// 	}
-	// 	// r.ParseMultipartForm(1024)
-	// 	// fmt.Fprintf(w, "Form: %#v\nPostForm: %#v\nMultipartForm: %#v\n", r.Form, r.PostForm, r.MultipartForm)
-	// }
-	// if msg.Service == "" {
-	// 	messaging.FailBadRequest(w)
-	// 	logger.GetLogger().Print("  Invalid command")
-	// } else {
-	// logger.GetLogger().Printf("  -> %#v", msg)
-	response, err := msg.Send(messaging.Messenger)
-	// logger.GetLogger().Printf("  <- %#v, %v", response, err)
+	logger.GetLogger().Logf(logger.Debug, "%#v", message)
+	response, err := message.Send(messaging.Messenger)
+	if err != nil {
+		logger.GetLogger().Log(logger.Warning, err)
+	}
 	w.WriteHeader(response.Code)
 	w.Header().Set("Content-Type", response.ContentType)
 	fmt.Fprintf(w, "%v", response.Payload)
-	// }
-	// logger.GetLogger().Printf("%#v", msg)
 }
 
 func main() {
 	if len(os.Args) > 1 {
-		// token = os.Args[1]
-		headers["Authorization"] = "Bearer " + os.Args[1]
+		ipinfo.SetToken(os.Args[1])
 	}
-	http.HandleFunc("/get/"+name+"/version", func(w http.ResponseWriter, r *http.Request) {
-		logIt(r)
-		// logger.GetLogger().Printf("%v %v from %v using %v", r.Method, r.URL.Path, r.RemoteAddr, r.Header["User-Agent"][0])
-		fmt.Fprint(w, version)
-	})
-	http.HandleFunc("/", handler)
-	logger.GetLogger().Printf("Listening on port %v", port)
-	logger.GetLogger().Fatal(http.ListenAndServe(":"+port, nil))
+	response, err := messaging.Get(messaging.Messenger, "register/"+name+"/"+port+"/localhost")
+	if err != nil {
+		logger.GetLogger().Log(logger.Warning, err)
+	} else if response.Code != http.StatusOK {
+		logger.GetLogger().Logf(logger.Warning, "Server registration code: %v", response.Code)
+	}
+	var handlers = server.Handlers{
+		{Pattern: "/get/" + name + "/version", Handler: versionHandler},
+		{Pattern: "/", Handler: generalHandler},
+	}
+	me := server.NewServer(":"+port, &handlers)
+	me.SetOnStart(func() { logger.GetLogger().Logf(logger.Info, "Listening on port %v", port) })
+	me.SetOnFail(func(err error) { logger.GetLogger().Log(logger.Error, err) })
+	me.SetOnInterrupt(func(signal os.Signal) { logger.GetLogger().Logf(logger.Warning, "Received %v", signal) })
+	me.Start()
+	messaging.Get(messaging.Messenger, "unregister/"+name)
+	logger.GetLogger().Log(logger.Info, "Exiting now")
 }
