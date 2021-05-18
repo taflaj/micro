@@ -1,0 +1,5 @@
+github.com/golang-collections/collections v0.0.0-20130729185459-604e922904d3/go.mod h1:nPpo7qLxd6XL3hWJG/O60sR8ZKfMCiIoNap5GvD12KU=
+github.com/mattn/go-sqlite3 v1.14.7 h1:fxWBnXkxfM6sRiuH3bqJ4CfzZojMOLVc0UTsTglEghA=
+github.com/mattn/go-sqlite3 v1.14.7/go.mod h1:NyWgC/yNuGj7Q9rpYnZvas74GogHl5/Z4A/KQRfk6bU=
+github.com/taflaj/util v0.0.0-20210422021305-82fdf7a57dc7 h1:aZDDxNiGx4laM7zFSO/u9bnp3a2N/CYIy3sU/rW18sI=
+github.com/taflaj/util v0.0.0-20210422021305-82fdf7a57dc7/go.mod h1:AtBFqLb9vPYCh3K0skHvWU+uM2gorgokCmNsiEQ7UP4=

@@ -3,11 +3,11 @@ An implementation of microservices
 
 ## Message Digest ##
 
-Download the full digest: `curl -X GET get/digest`
-
-Add a single line (may contain special characters): `curl -X PUT add/digest/line -d '<text>'`
+Download the full digest: `curl -X GET get/digest/full`
 
 Add one or more lines: `curl -X PUT add/digest/lines -d '<text>' [-d '<text>' [...]]`
+
+The consumer's IP address must be registered with the system to read from and/or write to the message digest.
 
 ## Public Keys ##
 
@@ -28,11 +28,17 @@ Default length is 32 characters.
 
 ## Access Control ##
 
+Get access level to a given service: `curl -X GET get/access/<service> -d "ip=<id address>"`
+
+Response is `no` for no access, `ro` for read only, `wo` for write only, `rw` for read & write, or `default` in case access is not defined. Requestor must have read access to the access service.
+
 Set specific access: `curl -X PUT set/access/<service> -d "access=<access>" -d "ip=<id address>" [-d "owner=<owner>] [-d "remarks=<remarks>]`
+
+Access can be `no` for no access, `ro` for read only, `wo` for write only, and `rw` for read & write. Requestor must have write access to the access service.
 
 Set default access: `curl -X DELETE set/access/<service> -d "ip=<id address>"`
 
-Access can be `no` for no access, `ro` for read only, `wo` for write only, and `rw` for read & write. Requestor must have write access to the access service.
+Requestor must have write access to the access service.
 
 ## Not Yet Implemented ##
 

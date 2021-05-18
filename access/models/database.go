@@ -4,20 +4,20 @@ package models
 
 import (
 	"database/sql"
-	"net/http"
 
 	// to isolate database details from the remainder of the application
 	_ "github.com/mattn/go-sqlite3"
-	"github.com/taflaj/micro/modules/database"
-	"github.com/taflaj/micro/modules/messaging"
+	"github.com/taflaj/services/modules/database"
+	"github.com/taflaj/services/modules/logger"
+	"github.com/taflaj/services/modules/messaging"
 )
 
 // DataStore implements model methods
 type DataStore interface {
 	Close() error
-	GetAccess(int, string) (*messaging.AccessLevel, error)
-	ResetAccess(http.ResponseWriter, *messaging.Message) error
-	SetAccess(http.ResponseWriter, *messaging.Message) error
+	GetAccess(int, string) *messaging.AccessLevel
+	ResetAccess(int, string) error
+	SetAccess(*messaging.AccessLevel, string, string) error
 }
 
 // DB is used to encapsulate sql.DB
@@ -26,7 +26,6 @@ type DB struct {
 }
 
 func initialize(db *sql.DB) error {
-	// create database tables
 	tx, err := db.Begin()
 	if err != nil {
 		return err
@@ -59,8 +58,8 @@ func initialize(db *sql.DB) error {
 			"  FROM ACL A, v_Addresses B\n" +
 			"  WHERE A.Address_ID = B.ID",
 	}
-	for i := 0; i < len(commands); i++ {
-		if _, err = database.Execute(db, commands[i]); err != nil {
+	for _, command := range commands {
+		if _, err = database.Execute(db, command); err != nil {
 			return err
 		}
 	}
@@ -82,54 +81,8 @@ func Open(dataSourceName string) (*DB, error) {
 	return &DB{db}, nil
 }
 
-func (db *DB) addAddress(address int, owner string, remarks string) (int64, error) {
-	command := "SELECT ID FROM Addresses WHERE Address=?"
-	id, ok, err := database.GetInt(db.DB, command, address)
-	if ok {
-		return id, err
-	}
-	command = "INSERT INTO Addresses(Address, Owner, Remarks) VALUES(?, ?, ?)"
-	result, err := database.Execute(db.DB, command, address, owner, remarks)
-	if err != nil {
-		return 0, err
-	}
-	id, err = result.LastInsertId()
-	return id, err
-}
-
-func (db *DB) addService(service string) (int64, error) {
-	command := "SELECT ID FROM Services WHERE Service=?"
-	id, ok, err := database.GetInt(db.DB, command, service)
-	if ok {
-		return id, err
-	}
-	command = "INSERT INTO Services(Service) VALUES(?)"
-	result, err := database.Execute(db.DB, command, service)
-	if err != nil {
-		return 0, err
-	}
-	id, err = result.LastInsertId()
-	return id, err
-}
-
-func (db *DB) setAccess(address int64, service int64, canRead bool, canWrite bool) (int64, error) {
-	command := "SELECT ID FROM ACL WHERE Address_ID=? AND Service_ID=?"
-	id, ok, err := database.GetInt(db.DB, command, address, service)
-	if ok {
-		command = "UPDATE ACL\nSET CanRead=?, CanWrite=?\nWHERE ID=?"
-		_, err = database.Execute(db.DB, command, canRead, canWrite, id)
-		return id, err
-	}
-	command = "INSERT INTO ACL(Address_ID, Service_ID, CanRead, CanWrite) VALUES(?, ?, ?, ?)"
-	result, err := database.Execute(db.DB, command, address, service, canRead, canWrite)
-	if err != nil {
-		return 0, err
-	}
-	id, err = result.LastInsertId()
-	return id, err
-}
-
-func (db *DB) resetAccess(address int, service string) error {
+// ResetAccess restores access for a given host to a specific service to the default
+func (db *DB) ResetAccess(address int, service string) error {
 	command := "DELETE FROM ACL WHERE Address_ID=(\n" +
 		"  SELECT ID FROM Addresses WHERE Address=?\n" +
 		") AND Service_ID=(\n" +
@@ -139,15 +92,42 @@ func (db *DB) resetAccess(address int, service string) error {
 	return err
 }
 
+// SetAccess defines access for a given host to a specific service
+func (db *DB) SetAccess(level *messaging.AccessLevel, owner string, remarks string) error {
+	if _, ok, _ := database.GetInt(db.DB, "SELECT ID FROM Addresses WHERE Address=?", level.IP); !ok {
+		if _, err := database.Execute(db.DB, "INSERT INTO Addresses(Address, Owner, Remarks) VALUES(?, ?, ?)", level.IP, owner, remarks); err != nil {
+			logger.GetLogger().Log(logger.Error, err)
+			return err
+		}
+	}
+	if _, ok, _ := database.GetInt(db.DB, "SELECT ID FROM Services WHERE Service=?", level.Service); !ok {
+		if _, err := database.Execute(db.DB, "INSERT INTO Services(Service, Remarks) VALUES(?, ?)", level.Service, remarks); err != nil {
+			logger.GetLogger().Log(logger.Error, err)
+			return err
+		}
+	}
+	id, ok, _ := database.GetInt(db.DB, "SELECT ID FROM v_ACL WHERE Address=? AND Service=?", level.IP, level.Service)
+	if ok {
+		if _, err := database.Execute(db.DB, "UPDATE ACL\nSET CanRead=?, CanWrite=?, Remarks=?\nWHERE ID=?", level.CanRead, level.CanWrite, remarks, id); err != nil {
+			logger.GetLogger().Log(logger.Error, err)
+			return err
+		}
+	} else {
+		if _, err := database.Execute(db.DB, "INSERT INTO ACL(Address_ID, Service_ID, CanRead, CanWrite, Remarks) VALUES((SELECT ID FROM Addresses WHERE Address=?), (SELECT ID FROM Services WHERE Service=?), ?, ?, ?)", level.IP, level.Service, level.CanRead, level.CanWrite, remarks); err != nil {
+			logger.GetLogger().Log(logger.Error, err)
+			return err
+		}
+	}
+	return nil
+}
+
 // GetAccess returns the access level of a given host to a given service
-func (db *DB) GetAccess(address int, service string) (*messaging.AccessLevel, error) {
-	level := messaging.AccessLevel{Address: address, Service: service}
-	var err error
+func (db *DB) GetAccess(address int, service string) *messaging.AccessLevel {
+	level := messaging.AccessLevel{IP: address, Service: service}
 	command := "SELECT CanRead, CanWrite FROM v_ACL WHERE Address=? AND Service=?"
 	row := db.DB.QueryRow(command, address, service)
-	// logger.GetLogger().Printf("DEBUG row=%#v", row)
 	var canRead, canWrite int
-	if err = row.Scan(&canRead, &canWrite); err == nil {
+	if err := row.Scan(&canRead, &canWrite); err == nil {
 		level.Defined = true
 		level.CanRead = canRead != 0
 		level.CanWrite = canWrite != 0
@@ -155,17 +135,15 @@ func (db *DB) GetAccess(address int, service string) (*messaging.AccessLevel, er
 			level.Level = "ro"
 			if level.CanWrite {
 				level.Level = "rw"
-			} else {
-				level.Level = "no"
-				if level.CanWrite {
-					level.Level = "wo"
-				}
+			}
+		} else {
+			level.Level = "no"
+			if level.CanWrite {
+				level.Level = "wo"
 			}
 		}
-	} else {
-		level.Defined = false
 	}
-	return &level, err
+	return &level
 }
 
 // Close closes the database

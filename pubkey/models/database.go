@@ -7,8 +7,7 @@ import (
 
 	// to isolate database details from the remainder of the application
 	_ "github.com/mattn/go-sqlite3"
-	"github.com/taflaj/micro/modules/database"
-	// "github.com/taflaj/micro/database"
+	"github.com/taflaj/services/modules/database"
 )
 
 // DataStore implements model methods
@@ -23,7 +22,6 @@ type DB struct {
 }
 
 func initialize(db *sql.DB) error {
-	// create database tables
 	tx, err := db.Begin()
 	if err != nil {
 		return err
@@ -35,17 +33,17 @@ func initialize(db *sql.DB) error {
 			"  PubKey TEXT)",
 		"CREATE UNIQUE INDEX IF NOT EXISTS PubKeys_ID_IDX ON PubKeys(ID, Email)",
 	}
-	for i := 0; i < len(commands); i++ {
-		if _, err = database.Execute(db, commands[i]); err != nil {
+	for _, command := range commands {
+		if _, err := database.Execute(db, command); err != nil {
 			return err
 		}
 	}
 	return tx.Commit()
 }
 
-// Open connects to the database and initializes it
-func Open(dataSourceName string) (*DB, error) {
-	db, err := sql.Open("sqlite3", dataSourceName)
+// Open connects to the database and initializes it`
+func Open(dsn string) (*DB, error) {
+	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, err
 	}

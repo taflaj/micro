@@ -8,13 +8,29 @@ import (
 	"os"
 )
 
+const (
+	defaultDepth = 2
+)
+
+type Level int
+
+const (
+	None     Level = iota
+	Debug          = iota + 10
+	Info           = iota + 10
+	Warning        = iota + 10
+	Error          = iota + 10
+	Critical       = iota + 10
+)
+
 // Logger implements a logging mechanism
 type Logger interface {
-	Fatal(...interface{})
-	Panic(...interface{})
-	Print(...interface{})
-	Printf(string, ...interface{})
-	Spy(string)
+	GetLevel() Level
+	Output(level Level, depth int, s string) error
+	Log(level Level, v ...interface{}) error
+	Logf(level Level, format string, v ...interface{}) error
+	Logd(level Level, delta int, v ...interface{}) error
+	Logdf(level Level, delta int, format string, v ...interface{}) error
 }
 
 var logger Logger
@@ -22,16 +38,23 @@ var logger Logger
 // Log represents the logging object
 type Log struct {
 	owner string
+	level Level
 	pid   int
 }
 
 func init() {
 	log.SetFlags(log.Flags() | log.Lmicroseconds)
+	// log.SetFlags(log.Flags() | log.Lmicroseconds | log.Lshortfile)
 }
 
 // NewLogger creates a new logger
-func NewLogger(owner string) Logger {
-	logger = &Log{owner, os.Getpid()}
+func NewLogger(owner string, level Level) Logger {
+	if level < 0 {
+		level = 0
+	} else if level > 99 {
+		level = 99
+	}
+	logger = &Log{owner, level, os.Getpid()}
 	return logger
 }
 
@@ -40,38 +63,56 @@ func GetLogger() Logger {
 	return logger
 }
 
-// Printf logs formatted output
-func (l *Log) Printf(format string, v ...interface{}) {
-	l.Print(fmt.Sprintf(format, v...))
+func (level Level) ToString() string {
+	var levelName string
+	switch level {
+	case Critical:
+		levelName = "CRITICAL"
+	case Error:
+		levelName = "ERROR"
+	case Warning:
+		levelName = "WARNING"
+	case Info:
+		levelName = "INFO"
+	case Debug:
+		levelName = "DEBUG"
+	case None:
+		levelName = "NONE"
+	default:
+		levelName = fmt.Sprintf("CUSTOM%02d", level)
+	}
+	return levelName
 }
 
-// Print logs static output
-func (l *Log) Print(v ...interface{}) {
-	// s := fmt.Sprint(v...)
-	log.Printf("%v %v %s", l.owner, l.pid, fmt.Sprint(v...))
+// GetLevel returns the log level
+func (l *Log) GetLevel() Level {
+	return l.level
 }
 
-// Fatal logs a fatal error
-func (l *Log) Fatal(v ...interface{}) {
-	log.Fatalf("%v %v %s", l.owner, l.pid, fmt.Sprint(v...))
+// Output writes the output for a logging event
+func (l *Log) Output(level Level, depth int, s string) error {
+	if level < l.level {
+		return nil
+	}
+	return log.Output(depth+1, fmt.Sprintf("%-8s %s %v %s", level.ToString(), l.owner, l.pid, s))
 }
 
-// Panic is panic
-func (l *Log) Panic(v ...interface{}) {
-	log.Panicf("%v %v %s", l.owner, l.pid, fmt.Sprint(v...))
+// Log calls Output to print to the logger
+func (l *Log) Log(level Level, v ...interface{}) error {
+	return l.Output(level, defaultDepth, fmt.Sprint(v...))
 }
 
-// Spy reports on an intruder
-func (l *Log) Spy(who string) {
-	// if who == "Go-http-client/1.1" {
-	// 	when := time.Now().Format("20060102-150405")
-	// 	dump := func(when string, what string, cmd *exec.Cmd) {
-	// 		output, _ := cmd.Output()
-	// 		f, _ := os.Create("/tmp/" + l.owner + "_" + what + "_" + when)
-	// 		defer f.Close()
-	// 		f.WriteString(string(output))
-	// 	}
-	// 	dump(when, "ps", exec.Command("ps", "-ef"))
-	// 	dump(when, "ss", exec.Command("ss", "-anp"))
-	// }
+// Logf calls Output to print to the logger
+func (l *Log) Logf(level Level, format string, v ...interface{}) error {
+	return l.Output(level, defaultDepth, fmt.Sprintf(format, v...))
+}
+
+// Logd calls Output with variable depth to print to the logger
+func (l *Log) Logd(level Level, delta int, v ...interface{}) error {
+	return l.Output(level, defaultDepth+delta, fmt.Sprint(v...))
+}
+
+// Logfd calls Output with variable depth to print to the logger
+func (l *Log) Logdf(level Level, delta int, format string, v ...interface{}) error {
+	return l.Output(level, defaultDepth+delta, fmt.Sprintf(format, v...))
 }
