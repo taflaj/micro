@@ -1,20 +1,6 @@
 # micro
 An implementation of microservices
 
-## Message Digest ##
-
-Download the full digest: `curl -X GET get/digest/full`
-
-Add one or more lines: `curl -X PUT add/digest/lines -d '<text>' [-d '<text>' [...]]`
-
-The consumer's IP address must be registered with the system to read from and/or write to the message digest.
-
-## Public Keys ##
-
-Get a public key given its email address: `curl -X GET get/pubkey/<email>`
-
-Public keys, due to security concerns, can only be updated manually.
-
 ## Random Numbers and Strings ##
 
 `curl -X GET get/random/<type>[/<length>]`
@@ -26,27 +12,82 @@ Default length is 32 characters.
 
 `curl -X GET get/<service>/version`
 
-## Access Control ##
-
-Get access level to a given service: `curl -X GET get/access/<service> -d "ip=<id address>"`
-
-Response is `no` for no access, `ro` for read only, `wo` for write only, `rw` for read & write, or `default` in case access is not defined. Requestor must have read access to the access service.
-
-Set specific access: `curl -X PUT set/access/<service> -d "access=<access>" -d "ip=<id address>" [-d "owner=<owner>] [-d "remarks=<remarks>]`
-
-Access can be `no` for no access, `ro` for read only, `wo` for write only, and `rw` for read & write. Requestor must have write access to the access service.
-
-Set default access: `curl -X DELETE set/access/<service> -d "ip=<id address>"`
-
-Requestor must have write access to the access service.
-
 ## Not Yet Implemented ##
 
 Upload a file: `curl -X POST add/digest/file -F 'file=@</full/path/to/file>'`
 
 Add json: `curl -X PUT add/<service>/json -H "Content-Type: application/json" -d "<json-text>"`
 
-## For Future Use ##
+### Access Control ###
+
+Get access level to a given service: `curl -X GET get/access/<service>/<ip address>[/<format>]`
+
+Format is `text` (default) or `json`.
+
+Response is `no` for no access, `ro` for read only, `wo` for write only, `rw` for read & write, or `default` in case access is not defined. Requestor must have read access to the access service.
+
+Set specific access: `curl -X PUT set/access/<service>/<ip address> -d "access=<access>" [-d "owner=<owner>] [-d "remarks=<remarks>]`
+
+Access can be `no` for no access, `ro` for read only, `wo` for write only, and `rw` for read & write. Requestor must have write access to the access service.
+
+Set default access: `curl -X DELETE set/access/<service>/<ip address>`
+
+Requestor must have write access to the access service.
+
+### Message Digest ###
+
+Download the full digest: `curl -X GET get/digest/full`
+
+Add one or more lines: `curl -X PUT add/digest/lines[/<format>] -F 'lines[]=<text>' [-F 'lines[]=<text>' [...]]`
+
+Format is `text` (default) or `json`.
+
+The consumer's IP address must be registered with the system to read from and/or write to the message digest service.
+
+### Public Keys ###
+
+Get a public key given its email address: `curl -X GET get/pubkey/<email>`
+
+Public keys, due to security concerns, can only be updated manually.
+
+### Exceptions ###
+
+A given service may need to query the access level the requestor has. In this case, it must pass a `Message` to the pubsub router, setting all fields accordingly, with attention to the following:
+
+* `To` must include "service."
+* `Service` must be set to "service."
+* `IP` must be set to -1.
+* `Data` must contain an `AccessLevelQuery` object.
+
+```go
+type AccessLevelQuery struct {
+        Address int
+        Service string
+}
+```
+
+* `Address` contains the IP address of the consumer.
+* `Service` contains the name of the service.
+
+The response comes in this form:
+
+```go
+type AccessLevel struct {
+	Address  int
+	Service  string
+	Defined  bool
+	Level    string
+	CanRead  bool
+	CanWrite bool
+}
+```
+
+* `Address` contains the IP address of the consumer.
+* `Service` contains the name of the service.
+* `Defined` specifies whether specific access is defined or custom (`true`) or default (`false`). If custom:
+    * `Level` contains the access level: `no`, `wo`, `ro`, or `rw`.
+    * `CanRead`, if `true`, indicates the requestor can read from the service.
+    * `CanWrite`, if `true`, indicates the requestor can write to the service.## For Future Use ##
 
 ```
 &messaging.Message{
@@ -116,19 +157,13 @@ func main() {
 
 ## Entry Point ##
 
-The entry point to all the services is by default listening on port 8888. All it does is assemble a message based on the incoming request and pass it on to the router, and then return its response to the caller.
+The entry point to all the services is by default listening on port 9999. All it does is assemble a message based on the incoming request and pass it on to the pubsub router, and then return the main response to the caller.
 
-## Router ##
+## PubSub Router ##
 
-The router is listening on port 8001 by default. It receives a message through http POST, passes it as http POST requests to the necessary services, collects the response, and returns it as a simple http response to the caller.
+The router is listening on port 9998 by default. It receives a message through gRPC, forwards it to the subscribed services, collects the responses, and returns them as an array to the caller.
 
 Before a service can be called, it must register itself with the router, and then unregister before it becomes inactive.
-
-Equivalent register request: `curl -X GET register/<service>/<port>[/address]`
-
-By default, the router uses the IP address of the incoming register request.
-
-Equivalent unregister request: `curl -X GET unregister/<service>`
 
 ## Internal Message Format ##
 
@@ -137,67 +172,23 @@ This is the format that all services use to send messages to one another.
 ```go
 type Message struct {
         To      []string
-        CC      []string
         From    string
         Service string
         Method  string
         Request string
         Command []string
-        IP      int
-        Data    interface{}
+        IP      uint32
+        Data    string
 }
 ```
 
-Each message is passed as a json object using http POST.
+Each message is passed as a json object using gRPC.
 
 * `To` contains the names of all primary services that must receive this message. Each recipient is expected to respond.
-    * In the current implementation, the router ignores this field. Instead, it uses `Service` to route the message.
-* `CC` contains the names of all secondary services that need to be informed. No response is expected.
 * `From` contains the name of the sender of the message.
 * `Service` contains the name of the service being invoked. It follows `get`, `set`, etc. on the request.
 * `Method` contains the http request method.
 * `Request` contains the entire http request.
 * `Command` contains each component of the request (whatever is separated by `/`) in an array.
 * `IP` contains the IP address of the requestor. Could be used for whitelisting and blacklisting. If set to -1, it means the request was originated by another service.
-* `Data` contains whatever form data (specified using `-d` or `-F`) is included.
-
-The response is usually a plain and simple http response.
-
-### Exceptions ###
-
-A given service may need to query the access level the requestor has. In this case, it must pass a `Message` to the router, setting all fields accordingly, with attention to the following:
-
-* `To` must include "service."
-* `Service` must be set to "service."
-* `IP` must be set to -1.
-* `Data` must contain an `AccessLevelQuery` object.
-
-```go
-type AccessLevelQuery struct {
-        Address int
-        Service string
-}
-```
-
-* `Address` contains the IP address of the consumer.
-* `Service` contains the name of the service.
-
-The response comes in this form:
-
-```go
-type AccessLevel struct {
-	Address  int
-	Service  string
-	Defined  bool
-	Level    string
-	CanRead  bool
-	CanWrite bool
-}
-```
-
-* `Address` contains the IP address of the consumer.
-* `Service` contains the name of the service.
-* `Defined` specifies whether specific access is defined or custom (`true`) or default (`false`). If custom:
-    * `Level` contains the access level: `no`, `wo`, `ro`, or `rw`.
-    * `CanRead`, if `true`, indicates the requestor can read from the service.
-    * `CanWrite`, if `true`, indicates the requestor can write to the service.
+* `Data` contains whatever form data (specified using `-d` or `-F`) is included. It is encoded as JSON text.

@@ -44,7 +44,6 @@ type Log struct {
 
 func init() {
 	log.SetFlags(log.Flags() | log.Lmicroseconds)
-	// log.SetFlags(log.Flags() | log.Lmicroseconds | log.Lshortfile)
 }
 
 // NewLogger creates a new logger
@@ -53,6 +52,9 @@ func NewLogger(owner string, level Level) Logger {
 		level = 0
 	} else if level > 99 {
 		level = 99
+	}
+	if level < Info {
+		log.SetFlags(log.Flags() | log.Lshortfile)
 	}
 	logger = &Log{owner, level, os.Getpid()}
 	return logger

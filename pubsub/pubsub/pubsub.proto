@@ -1,0 +1,51 @@
+// pubsub/pubsub: pubsub.proto
+
+syntax = "proto3";
+
+option go_package = "github.com/taflaj/micro/pubsub/pubsub";
+
+package pubsub;
+
+service PubSub {
+    rpc Subscribe   (SubscribeRequest)   returns (SubscribeReply) {}
+    rpc Unsubscribe (UnsubscribeRequest) returns (SubscribeReply) {}
+    rpc Publish     (PublishMessage)     returns (PublishReply)   {}
+    rpc Notify      (PublishMessage)     returns (NotifyReply)    {}
+}
+
+message SubscribeRequest {
+    string service = 1;
+    string host    = 2;
+    uint32 port    = 3;
+}
+
+message SubscribeReply {
+    uint64 id = 1;
+}
+
+message UnsubscribeRequest {
+    SubscribeRequest request = 1;
+    uint64 id                = 2;
+}
+
+message PublishMessage {
+    repeated string to      = 1;
+    string from             = 2;
+    string service          = 3;
+    string method           = 4;
+    string request          = 5;
+    repeated string command = 6;
+    uint32 ip               = 7;
+    string extra            = 8;
+}
+
+message PublishReply {
+    repeated NotifyReply replies = 1;
+}
+
+message NotifyReply {
+    string from = 1;
+    uint32 code = 2;
+    string type = 3;
+    string data = 4;
+}
