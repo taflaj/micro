@@ -3,32 +3,35 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
-	"github.com/taflaj/services/modules/logger"
-	"github.com/taflaj/services/modules/messaging"
+	"github.com/taflaj/micro/modules/logger"
+	"github.com/taflaj/micro/modules/messaging"
+	pb "github.com/taflaj/micro/pubsub/pubsub"
 	"github.com/taflaj/util/ipinfo"
 	"github.com/taflaj/util/server"
+	"google.golang.org/grpc"
 )
 
 const (
 	blank   = "<blank>"
 	name    = "server"
-	port    = "9999"
-	version = "0.1.4"
+	port    = 9999
+	version = "0.1.5"
 )
 
 func init() {
 	logger.NewLogger(name, logger.Info)
-	// logger.NewLogger(name, logger.Debug)
 }
 
-func getAddress(origin string) (string, int) {
+func getAddress(origin string) (string, uint32) {
 	p := strings.LastIndex(origin, ":")
 	asString := origin[:p]
 	asInt, _ := messaging.IPtoInt(asString)
@@ -73,61 +76,101 @@ func getFirst(v []string) string {
 	return result
 }
 
+var connection *grpc.ClientConn
+
 func generalHandler(w http.ResponseWriter, r *http.Request) {
 	logIt(r)
 	contentType := getFirst(r.Header["Content-Type"])
 	accept := getFirst(r.Header["Accept"])
-	logger.GetLogger().Logf(logger.Info, "  Contents: \"%v\" (%v); Accept \"%v\"", contentType, r.ContentLength, accept)
+	logger.GetLogger().Logf(logger.Info, "  Content-Type: \"%v\" (%v); Accept \"%v\"", contentType, r.ContentLength, accept)
 	_, ip := getAddress(r.RemoteAddr)
-	message := messaging.Message{From: name, Method: r.Method, Request: r.RequestURI, IP: ip}
+	message := &pb.PublishMessage{From: name, Method: r.Method, Request: r.RequestURI, Ip: ip}
 	message.Command = strings.Split(r.RequestURI[1:], "/")
 	if len(message.Command) > 1 {
-		message.Service = message.Command[1]
+		service := message.Command[1]
+		message.Service = service
+		message.To = []string{service}
 	}
-	defer r.Body.Close()
-	body, err := ioutil.ReadAll(r.Body)
-	if err != nil {
-		logger.GetLogger().Log(logger.Warning, err)
-	}
+	// logger.GetLogger().Logf(logger.Debug, "%#v", message)
 	switch contentType {
-	case "application/json":
-		if err = json.Unmarshal(body, &message.Data); err != nil {
+	// case "application/json":
+	// 	if err = json.Unmarshal(body, &message.Data); err != nil {
+	// 		logger.GetLogger().Log(logger.Warning, err)
+	// 	}
+	case "application/x-www-form-urlencoded":
+		if err := r.ParseForm(); err != nil {
 			logger.GetLogger().Log(logger.Warning, err)
 		}
-	case "application/x-www-form-urlencoded":
-		message.Data = strings.Split(string(body), "&")
+		b, err := json.Marshal(r.Form)
+		if err == nil {
+			message.Extra = string(b)
+		} else {
+			logger.GetLogger().Log(logger.Warning, err)
+		}
 	default:
-		message.Data = append(message.Data, string(body))
+		if strings.HasPrefix(contentType, "multipart/form-data") {
+			if err := r.ParseMultipartForm(1048576); err != nil {
+				logger.GetLogger().Log(logger.Warning, err)
+			} else {
+				b, err := json.Marshal(r.PostForm)
+				if err == nil {
+					message.Extra = string(b)
+				} else {
+					logger.GetLogger().Log(logger.Warning, err)
+				}
+			}
+		} else {
+			defer r.Body.Close()
+			body, err := ioutil.ReadAll(r.Body)
+			if err == nil {
+				message.Extra = string(body)
+			} else {
+				logger.GetLogger().Log(logger.Warning, err)
+			}
+			// message.Extra = string(body) //url.Values{"": []string{string(body)}}
+		}
 	}
-	logger.GetLogger().Logf(logger.Debug, "%#v", message)
-	response, err := message.Send(messaging.Messenger)
-	if err != nil {
+	client := pb.NewPubSubClient(connection)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	replies, err := client.Publish(ctx, message)
+	if err == nil {
+		logger.GetLogger().Logf(logger.Debug, "%#v", replies)
+		first := replies.Replies[0]
+		w.WriteHeader(int(first.Code))
+		contentType = first.Type
+		if len(contentType) == 0 {
+			contentType = "text/plain"
+		}
+		w.Header().Set("Content-Type", contentType)
+		fmt.Fprint(w, first.Data)
+	} else {
 		logger.GetLogger().Log(logger.Warning, err)
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprint(w, err)
 	}
-	w.WriteHeader(response.Code)
-	w.Header().Set("Content-Type", response.ContentType)
-	fmt.Fprintf(w, "%v", response.Payload)
+	// fmt.Fprintf(w, "%v\n", message)
 }
 
 func main() {
 	if len(os.Args) > 1 {
 		ipinfo.SetToken(os.Args[1])
 	}
-	response, err := messaging.Get(messaging.Messenger, "register/"+name+"/"+port+"/localhost")
-	if err != nil {
-		logger.GetLogger().Log(logger.Warning, err)
-	} else if response.Code != http.StatusOK {
-		logger.GetLogger().Logf(logger.Warning, "Server registration code: %v", response.Code)
+	var err error
+	connection, err = grpc.Dial(messaging.Host, grpc.WithInsecure())
+	if err == nil {
+		defer connection.Close()
+		var handlers = server.Handlers{
+			{Pattern: "/get/" + name + "/version", Handler: versionHandler},
+			{Pattern: "/", Handler: generalHandler},
+		}
+		me := server.NewServer(fmt.Sprintf(":%v", port), &handlers)
+		me.SetOnStart(func() { logger.GetLogger().Logf(logger.Info, "Listening on port %v", port) })
+		me.SetOnFail(func(err error) { logger.GetLogger().Log(logger.Error, err) })
+		me.SetOnInterrupt(func(signal os.Signal) { logger.GetLogger().Logf(logger.Warning, "Received signal: %v", signal) })
+		me.Start()
+	} else {
+		logger.GetLogger().Log(logger.Critical, err)
 	}
-	var handlers = server.Handlers{
-		{Pattern: "/get/" + name + "/version", Handler: versionHandler},
-		{Pattern: "/", Handler: generalHandler},
-	}
-	me := server.NewServer(":"+port, &handlers)
-	me.SetOnStart(func() { logger.GetLogger().Logf(logger.Info, "Listening on port %v", port) })
-	me.SetOnFail(func(err error) { logger.GetLogger().Log(logger.Error, err) })
-	me.SetOnInterrupt(func(signal os.Signal) { logger.GetLogger().Logf(logger.Warning, "Received %v", signal) })
-	me.Start()
-	messaging.Get(messaging.Messenger, "unregister/"+name)
 	logger.GetLogger().Log(logger.Info, "Exiting now")
 }
